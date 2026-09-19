@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Публикация поста в выбранные соцсети (Telegram-канал и группу ВК).
+Публикация поста в выбранные соцсети (Telegram-канал и ВК).
 
 Токены берутся из файла .env в корне проекта (в гит не попадает):
-  BOT_TOKEN=...       — токен бота от @BotFather
-  TG_CHAT_ID=...      — id канала, например @moi_kanal или -1001234567890
-  VK_TOKEN=...        — токен ВК с правом wall
-  VK_OWNER_ID=...     — id группы, например -12345678
+  BOT_TOKEN=...    — токен бота от @BotFather (бот — админ канала)
+  ADMIN_CHAT_ID=.. — id чата, куда бот присылает идеи и черновики
+
+Куда публикуем — в config.json, раздел «соцсети»:
+  telegram.канал_id   — @имя_канала или числовой id канала
+  vk.владелец_id       — id личной страницы (положительный) или группы
+                         (отрицательный, с минусом); знак выбирает режим сам
 
 Используется ботом (bot.py) на этапе 3 — после одобрения поста человеком.
 """
@@ -75,15 +78,19 @@ def vk_sanitize(text: str) -> str:
 
 
 def post_vk(owner_id: str, text: str) -> dict:
-    """Пост на стену группы ВК через wall.post."""
+    """Пост на стену ВК через wall.post.
+
+    owner_id положительный — личная страница (from_group=0),
+    отрицательный — группа (from_group=1). Знак решает всё."""
     token = load_env().get("VK_TOKEN")
     if not token or token.startswith("УКАЖИ"):
         return {"ok": False, "error": "нет VK_TOKEN в .env"}
+    from_group = 1 if owner_id.strip().startswith("-") else 0
     res = _post("https://api.vk.com/method/wall.post", {
         "access_token": token,
         "v": "5.199",
         "owner_id": owner_id,
-        "from_group": 1,
+        "from_group": from_group,
         "message": text,
     })
     if res.get("response"):
@@ -112,9 +119,9 @@ def publish(text_tg: str, text_vk: str | None = None) -> list[str]:
 
     vk = soc.get("vk", {})
     if vk.get("вкл"):
-        owner_id = vk.get("группа_id", "")
-        if owner_id.startswith("УКАЖИ"):
-            reports.append("VK: не указана группа_id в config.json")
+        owner_id = vk.get("владелец_id") or vk.get("группа_id") or ""
+        if owner_id.startswith("УКАЖИ") or not owner_id:
+            reports.append("VK: не указан владелец_id в config.json")
         else:
             r = post_vk(owner_id, text_vk or vk_sanitize(text_tg))
             reports.append("VK: опубликовано" if r["ok"]
