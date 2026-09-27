@@ -16,8 +16,6 @@
         <key>Minute</key>
         <integer>20</integer>
     </dict>
-    <key>RunAtLoad</key>
-    <true/>
     <key>StandardOutPath</key>
     <string>/Users/nadezda/claudecode/content-zavod/sbor.log</string>
     <key>StandardErrorPath</key>
