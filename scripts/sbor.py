@@ -15,6 +15,7 @@
 
 import json
 import re
+import ssl
 import sys
 import time
 import urllib.request
@@ -31,10 +32,15 @@ UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
 def fetch(url: str) -> bytes | None:
     """Скачать страницу. 2 попытки с паузой; при неудаче — None, не падаем."""
+    try:
+        import certifi  # сертификаты для urllib (у Питона с python.org их нет из коробки)
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ctx = None
     for attempt in (1, 2):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
                 return resp.read()
         except Exception as e:
             if attempt == 2:
@@ -60,6 +66,11 @@ def parse_rss(url: str) -> list[dict]:
             link = (item.findtext("link") or "").strip()
             desc = strip_html(item.findtext("description") or "")[:500]
             pub = (item.findtext("pubDate") or "").strip()
+            # Habr отдаёт служебные заголовки («Пост @автор — хаб — дата»),
+            # осмысленный текст — в description: берём оттуда первую фразу
+            if title.startswith("Пост @") and desc:
+                first = re.split(r"[.!?](?:\s|$)", desc, maxsplit=1)[0].strip()
+                title = (first[:100] + "…") if len(first) > 100 else (first or title)
             if title and link:
                 items.append({"title": title, "url": link,
                               "summary": desc, "source": url, "date": pub})

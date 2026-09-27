@@ -18,6 +18,7 @@
 
 import json
 import shutil
+import ssl
 import sys
 import time
 import urllib.parse
@@ -34,6 +35,7 @@ ARCHIVE = DRAFTS / "archive"
 IDEA = DRAFTS / "idea.json"
 POST = DRAFTS / "post.md"
 POST_VK = DRAFTS / "post_vk.md"
+ANIMATION = DRAFTS / "animation.gif"
 APPROVED = DRAFTS / "approved_idea.json"
 
 API = "https://api.telegram.org/bot{token}/{method}"
@@ -42,25 +44,30 @@ OFFSET = 0  # курсор обновлений (long polling)
 
 def load_env() -> dict:
     env = {}
-    f = ROOT / ".env"
-    if f.exists():
-        for line in f.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip()
+    for f in (ROOT / ".env", Path.home() / "claudecode" / ".env"):
+        if f.exists():
+            for line in f.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    env.setdefault(k.strip(), v.strip())
     return env
 
 
 def api(token: str, method: str, params: dict, attempts: int = 3) -> dict:
     """Вызов Bot API. Пауза между попытками растёт; при неудаче — честная ошибка."""
+    try:  # сертификаты для urllib (у Питона с python.org их нет из коробки)
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ctx = None
     data = urllib.parse.urlencode(params).encode()
     last = ""
     for attempt in range(1, attempts + 1):
         try:
             req = urllib.request.Request(
                 API.format(token=token, method=method), data=data)
-            with urllib.request.urlopen(req, timeout=40) as resp:
+            with urllib.request.urlopen(req, timeout=40, context=ctx) as resp:
                 return json.loads(resp.read().decode())
         except Exception as e:
             last = str(e)
@@ -140,10 +147,13 @@ def handle_callback(token: str, chat_id: str, data: str) -> str:
         # ВК-версия — отдельный файл; если её нет, publish сам вычистит разметку
         text_vk = POST_VK.read_text(encoding="utf-8") if POST_VK.exists() else None
         if data == "post_ok":
-            reports = publish.publish(text, text_vk)
+            anim = ANIMATION if ANIMATION.exists() else None
+            reports = publish.publish(text, text_vk, animation=anim)
             archive(POST, "post-опубликован")
             if POST_VK.exists():
                 archive(POST_VK, "post-vk-опубликован")
+            if anim is not None:
+                archive(anim, "post-анимация")
             return f"🚀 Публикация:\n" + "\n".join(reports)
         if data == "post_retry":
             archive(POST, "post-на-переписывание")

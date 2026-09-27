@@ -9,5 +9,7 @@ brand.md
 # Рабочие файлы конвейера (у каждого свои)
 candidates.json
 drafts/
+sbor.log
+чекпойнты/
 __pycache__/
 *.pyc
