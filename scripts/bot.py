@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Этапы 2–3 «Контент-завода»: одобрение идей и постов в Telegram-боте + публикация.
+Этапы 2–3 «Контент-завода»: одобрение идей и постов
+в Telegram-боте + публикация.
+
+Сторис-конвейер (надстройка): раз в сутки бот сам присылает пакет
+сторис по плану storis_plan.py (месяц 1 стратегии Coral Club) —
+карточку с текстом и фоновую картинку. Публикует в Instagram всегда
+человек, руками. Кнопки: готово / пропустить / написать по-другому;
+команда «фон» — пересобрать картинку дня. Куда присылать —
+STORY_CHAT_ID в .env (не задан — идёт в ADMIN_CHAT_ID).
 
 Как работает (всё через файлы, без базы данных):
-  drafts/idea.json   — идея поста, ждёт одобрения (кладёт Claude после сбора тем)
-  drafts/post.md     — черновик поста, ждёт одобрения (кладёт Claude после идеи)
+  drafts/idea.json   — идея поста, ждёт одобрения
+                       (кладёт Claude после сбора тем)
+  drafts/post.md     — черновик поста, ждёт одобрения
+                       (кладёт Claude после идеи)
   drafts/archive/    — сюда уходят обработанные файлы с меткой времени
 
 Запуск:  python3 scripts/bot.py
@@ -18,61 +28,66 @@
 
 import json
 import shutil
-import ssl
+import subprocess
 import sys
 import time
-import urllib.parse
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import publish  # noqa: E402  (наш модуль публикации в соцсети)
+import storis  # noqa: E402  (сторис-конвейер: план, пакет дня, фон)
 
 DRAFTS = ROOT / "drafts"
 ARCHIVE = DRAFTS / "archive"
 IDEA = DRAFTS / "idea.json"
 POST = DRAFTS / "post.md"
-POST_VK = DRAFTS / "post_vk.md"
+POST_VK = DRAFTS / "post_vk.txt"
 ANIMATION = DRAFTS / "animation.gif"
 APPROVED = DRAFTS / "approved_idea.json"
 
 API = "https://api.telegram.org/bot{token}/{method}"
 OFFSET = 0  # курсор обновлений (long polling)
 
-
-def load_env() -> dict:
-    env = {}
-    for f in (ROOT / ".env", Path.home() / "claudecode" / ".env"):
-        if f.exists():
-            for line in f.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    env.setdefault(k.strip(), v.strip())
-    return env
+# .env читаем через publish.load_env — единый читатель проекта
+load_env = publish.load_env
 
 
 def api(token: str, method: str, params: dict, attempts: int = 3) -> dict:
-    """Вызов Bot API. Пауза между попытками растёт; при неудаче — честная ошибка."""
-    try:  # сертификаты для urllib (у Питона с python.org их нет из коробки)
-        import certifi
-        ctx = ssl.create_default_context(cafile=certifi.where())
-    except ImportError:
-        ctx = None
-    data = urllib.parse.urlencode(params).encode()
-    last = ""
-    for attempt in range(1, attempts + 1):
-        try:
-            req = urllib.request.Request(
-                API.format(token=token, method=method), data=data)
-            with urllib.request.urlopen(req, timeout=40, context=ctx) as resp:
-                return json.loads(resp.read().decode())
-        except Exception as e:
-            last = str(e)
-            time.sleep(2 * attempt)
-    return {"ok": False, "description": last}
+    """Вызов Bot API — одна обёртка над publish._post (логика повторов
+    и сертификаты в одном месте, без дублей)."""
+    return publish._post(API.format(token=token, method=method), params,
+                         attempts=attempts)
+
+
+def уведом(text: str) -> None:
+    """Уведомление macOS на стол владельца: сигнал о событии, требующем
+    внимания вне бота (например, «идея одобрена — работай с Claude»).
+
+    Только по-тихому: если уведомления не работают (Linux, отсутствие
+    osascript), бот не должен упасть из-за этого."""
+    try:
+        subprocess.run(
+            ["osascript", "-e",
+             f'display notification "{text}" with title "Контент-завод"'],
+            timeout=10, check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass  # уведомление — приятный бонус, не критичный путь
+
+
+def send_photo_tg(token: str, chat_id: str, path: Path,
+                  caption: str = "") -> bool:
+    """Фото в чат (фон сторис) через multipart — обёртка над publish."""
+    try:
+        res = publish._upload_multipart(
+            API.format(token=token, method="sendPhoto"),
+            {"chat_id": chat_id, "caption": caption[:1000]},
+            "photo", path.name, path.read_bytes())
+        return bool(res.get("ok"))
+    except Exception:
+        return False
 
 
 def kb(buttons: list[list[dict]]) -> str:
@@ -112,6 +127,8 @@ def send_next(token: str, chat_id: str) -> None:
                 {"text": "❌ Отклонить", "callback_data": "idea_no"},
             ]]),
         })
+
+
 def send_next_post(token: str, chat_id: str) -> None:
     """Показать черновик поста на одобрение."""
     if POST.exists():
@@ -127,15 +144,82 @@ def send_next_post(token: str, chat_id: str) -> None:
         })
 
 
+def check_story(token: str, chat_id: str) -> None:
+    """Статус сторис для /start (пакеты собирает только сессия Claude,
+    бот сам ничего не генерирует и не пушит)."""
+    state = storis.load_state()
+    if state.get("кончился"):
+        return
+    day = state["день"]
+    plan = storis.load_plan()
+    if day not in plan:
+        state["кончился"] = True
+        storis.save_state(state)
+        api(token, "sendMessage", {
+            "chat_id": chat_id,
+            "text": ("🎉 Месяц 1 сторис пройден (последний авторский "
+                     "день — 27-й). Дни 28–30 — резерв: доснять хвосты "
+                     "и ответить на вопросы, без автопакетов. Для "
+                     "следующего месяца попроси Claude: «собери план "
+                     "сторис месяца 2»."),
+        })
+        return
+    if not state["отправлено"].get(str(day)):
+        api(token, "sendMessage", {
+            "chat_id": chat_id,
+            "text": (f"📱 Сторис дня {day} ещё не собрана: пакеты "
+                     "собирает сессия Claude. Попроси его: «собери "
+                     "следующую сторис» — пакет упадёт сюда."),
+        })
+
+
+def handle_story_button(token: str, chat_id: str, data: str) -> str:
+    """Кнопки пакета сторис: только отметки и движение дня. Пакет
+    следующего дня собирает сессия Claude (storis_send.py) — бот
+    сам ничего не генерирует."""
+    state = storis.load_state()
+    day = state["день"]
+    if data in ("story_ok", "story_skip"):
+        запись = state["отправлено"].get(str(day))
+        if запись is None:
+            return f"Пакет дня {day} ещё не приходил."
+        запись["опубликован"] = (data == "story_ok")
+        fon = storis.fon_path(day)
+        if fon.exists():
+            tag = ("storis-фон-опубликован" if data == "story_ok"
+                   else "storis-фон-пропущен")
+            archive(fon, tag)
+        следующий = day + 1
+        state["день"] = следующий
+        storis.save_state(state)
+        план = storis.load_plan()
+        if data == "story_ok":
+            итог = f"✅ День {day} отмечен опубликованным."
+        else:
+            итог = (f"➡️ День {day} пропущен (тема не потерялась: "
+                    f"вернуть — «сторис дня {day}»).")
+        if следующий in план:
+            итог += (f"\nДень {следующий} соберёт сессия Claude: "
+                     "попроси «собери следующую сторис».")
+        return итог
+    if data == "story_again":
+        return ("✏️ Принял. Попроси Claude: «переделай сторис дня "
+                f"{day}» — он перепишет текст и пришлёт пакет заново.")
+    return "Неизвестная кнопка."
+
+
 def handle_callback(token: str, chat_id: str, data: str) -> str:
     """Реакция на кнопку. Отчёт — короткой строкой для ответа в чат."""
-    now = datetime.now().strftime("%d.%m %H:%M")
+
+    if data.startswith("story"):
+        return handle_story_button(token, chat_id, data)
 
     if data.startswith("idea"):
         if not IDEA.exists():
             return "Идея уже обработана."
         if data == "idea_ok":
             shutil.move(IDEA, APPROVED)  # Claude увидит и напишет пост
+            уведом("Идея одобрена — открой Claude: он начнёт писать пост.")
             return "✅ Идея одобрена. Пишу пост — пришлю черновик."
         archive(IDEA, "idea-отклонена")
         return "❌ Идея отклонена. Предложу другую."
@@ -144,8 +228,10 @@ def handle_callback(token: str, chat_id: str, data: str) -> str:
         if not POST.exists():
             return "Черновик уже обработан."
         text = POST.read_text(encoding="utf-8")
-        # ВК-версия — отдельный файл; если её нет, publish сам вычистит разметку
-        text_vk = POST_VK.read_text(encoding="utf-8") if POST_VK.exists() else None
+        # ВК-версия — отдельный файл; если её нет,
+        # publish сам вычистит разметку
+        text_vk = POST_VK.read_text(encoding="utf-8") \
+            if POST_VK.exists() else None
         if data == "post_ok":
             anim = ANIMATION if ANIMATION.exists() else None
             reports = publish.publish(text, text_vk, animation=anim)
@@ -154,7 +240,7 @@ def handle_callback(token: str, chat_id: str, data: str) -> str:
                 archive(POST_VK, "post-vk-опубликован")
             if anim is not None:
                 archive(anim, "post-анимация")
-            return f"🚀 Публикация:\n" + "\n".join(reports)
+            return "🚀 Публикация:\n" + "\n".join(reports)
         if data == "post_retry":
             archive(POST, "post-на-переписывание")
             if POST_VK.exists():
@@ -179,12 +265,14 @@ def main() -> int:
         return 1
 
     offset = 0
+    story_chat = env.get("STORY_CHAT_ID", "") or chat_id
+    admin_chat = chat_id
     print("Бот запущен. Жду команды /start — пришлю, что требует решения.")
     while True:
         res = api(token, "getUpdates",
                   {"offset": offset, "timeout": 30, "limit": 5}, attempts=1)
         if not res.get("ok"):
-            print(f"Сеть моргнула, продолжаю: {res.get('description')}")
+            print(f"Сеть моргнула, продолжаю: {res.get('error')}")
             time.sleep(5)
             continue
         for upd in res.get("result", []):
@@ -196,19 +284,74 @@ def main() -> int:
                 chat = str(cb["message"]["chat"]["id"])
                 report = handle_callback(token, chat, cb.get("data", ""))
                 api(token, "sendMessage", {"chat_id": chat, "text": report})
-            elif msg.get("text", "").startswith("/start"):
+            elif msg.get("text", ""):
                 chat = str(msg["chat"]["id"])
-                api(token, "sendMessage", {
-                    "chat_id": chat,
-                    "text": "🏭 Контент-завод на связи.",
-                })
-                send_next(token, chat)
-                send_next_post(token, chat)
-                if not IDEA.exists() and not POST.exists():
-                    api(token, "sendMessage", {
-                        "chat_id": chat,
-                        "text": "Очередь пуста — новых идей и черновиков нет.",
-                    })
+                text = msg["text"].strip()
+                if text.startswith("/start"):
+                    if chat in (admin_chat, story_chat):
+                        api(token, "sendMessage", {
+                            "chat_id": chat,
+                            "text": "🏭 Контент-завод на связи.",
+                        })
+                        send_next(token, chat)
+                        send_next_post(token, chat)
+                        check_story(token, story_chat)
+                        after = storis.load_state()
+                        entry = storis.load_plan().get(after["день"])
+                        sent = after["отправлено"].get(str(after["день"]))
+                        if (not IDEA.exists() and not POST.exists()
+                                and (entry is None or sent and
+                                     sent.get("версия") == entry["версия"])):
+                            api(token, "sendMessage", {
+                                "chat_id": chat,
+                                "text": ("Очередь пуста — новых идей и "
+                                         "черновиков нет."),
+                            })
+                    else:  # незнакомый чат: даём свой id, чтобы записали
+                        api(token, "sendMessage", {
+                            "chat_id": chat,
+                            "text": (f"Это бот контент-завода. Твой chat "
+                                     f"id: {chat}. Если ты получатель "
+                                     "пакетов сторис — покажи id Михаилу, "
+                                     "он запишет его в .env "
+                                     "(STORY_CHAT_ID), и бот присылать "
+                                     "пакеты будет тебе."),
+                        })
+                elif text.lower() == "фон" and chat in (
+                        admin_chat, story_chat):
+                    # пересобрать фон текущего дня по требованию
+                    state = storis.load_state()
+                    day = state["день"]
+                    path, err = storis.регенерировать_фон(day)
+                    if path is not None and path.exists():
+                        ok = send_photo_tg(
+                            token, chat, path, f"🖼 Фон дня {day} — заново")
+                        report = ("✅ Фон готов" if ok
+                                  else "⚠️ Фото не ушло, попробуй ещё раз")
+                    else:
+                        report = f"⚠️ Фон не получился: {err}"
+                    api(token, "sendMessage", {"chat_id": chat,
+                                               "text": report})
+                elif text.lower().startswith("сторис") and chat in (
+                        admin_chat, story_chat):
+                    # «сторис дня 5» / «сторис 5» — пакет по номеру дня:
+                    # текущего (с кнопками) или задним числом (без кнопок)
+                    число = "".join(t for t in text if t.isdigit())
+                    if число and int(число) in storis.load_plan():
+                        day = int(число)
+                        state = storis.load_state()
+                        ok, отчёт = storis.отправить_пакет(
+                            token, chat, day,
+                            без_кнопок=day != state["день"])
+                        print(("" if ok else "! ") + отчёт)
+                    else:
+                        api(token, "sendMessage", {
+                            "chat_id": chat,
+                            "text": "Дай номер дня плана, например: "
+                                    "«сторис дня 5».",
+                        })
+                elif text.startswith("/"):
+                    pass  # прочие команды пока не обрабатываются
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@
 """
 
 import json
+import os
 import re
 import ssl
 import time
@@ -29,15 +30,19 @@ ROOT = Path(__file__).resolve().parent.parent
 def load_env() -> dict:
     """Прочитать .env в словарь (без библиотек, формат KEY=значение).
     Локальный content-zavod/.env приоритетнее, корневой — запасной источник."""
-    import os
+    home = Path(os.environ.get("HOME", ""))
     env = {}
-    for f in (ROOT / ".env", Path(os.environ.get("HOME", "")) / "claudecode" / ".env"):
-        if f.exists():
-            for line in f.read_text(encoding="utf-8").splitlines():
+    dotenvs = (
+        ROOT / ".env",
+        home / "claudecode" / ".env",
+    )
+    for env_path in dotenvs:
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    env.setdefault(k.strip(), v.strip())
+                    key, value = line.split("=", 1)
+                    env.setdefault(key.strip(), value.strip())
     return env
 
 
@@ -62,6 +67,33 @@ def _post(url: str, params: dict, attempts: int = 3) -> dict:
             last_err = str(e)
             time.sleep(2 * attempt)  # пауза растёт: 2с, 4с — и хватит
     return {"ok": False, "error": last_err}
+
+
+def _get(url: str, *, timeout: int, user_agent: str, attempts: int = 1,
+         pause: int = 0) -> tuple[bytes | None, str | None]:
+    """GET одним словом в одну обёртку: байты или текст последней ошибки.
+
+    Единая точка всех GET-загрузок проекта (RSS, кадры, фоны): тайминг,
+    повторов и паузы задаёт вызывающий — поведение каждого источника
+    остаётся тем же, сеть не дублируется."""
+    try:  # сертификаты для urllib (у Питона с python.org их нет из коробки)
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ctx = None
+    last_err = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": user_agent})
+            with urllib.request.urlopen(req, timeout=timeout,
+                                        context=ctx) as resp:
+                return resp.read(), None
+        except Exception as e:
+            last_err = str(e)
+        if pause and attempt < attempts:
+            time.sleep(pause * attempt)  # пауза растёт с попыткой
+    return None, last_err or None
 
 
 def _upload_multipart(url: str, fields: dict, file_field: str,
@@ -104,7 +136,8 @@ def send_animation_tg(chat_id: str, path: Path, caption: str = "") -> dict:
         )
         if res.get("ok"):
             return {"ok": True}
-        return {"ok": False, "error": f"Telegram: {res.get('description') or res}"}
+        detail = res.get("description") or res
+        return {"ok": False, "error": f"Telegram: {detail}"}
     except Exception as e:
         return {"ok": False, "error": f"Telegram: {e}"}
 
@@ -120,12 +153,13 @@ def _vk_upload_gif(token: str, owner_id: str, path: Path) -> str | None:
         if not url:
             return None
         up = _upload_multipart(url, {}, "file", path.name, path.read_bytes())
-        r = _post("https://api.vk.com/method/docs.save", {
+        save_doc = _post("https://api.vk.com/method/docs.save", {
             "access_token": token, "v": "5.199",
-            "file": up.get("file", ""), "title": "post.gif", "tags": "content_zavod",
+            "file": up.get("file", ""), "title": "post.gif",
+            "tags": "content_zavod",
         })
-        resp = r.get("response")
-        doc = resp.get("doc") if isinstance(resp, dict) else None
+        doc = (save_doc.get("response") or {}).get("doc") \
+            if isinstance(save_doc.get("response"), dict) else None
         if doc and doc.get("owner_id") and doc.get("id"):
             return f"doc{doc['owner_id']}_{doc['id']}"
         return None
@@ -183,7 +217,8 @@ def post_telegram(chat_id: str, text: str) -> dict:
 def vk_sanitize(text: str) -> str:
     """Убрать HTML-разметку для ВК: теги в никуда, абзацы сохранить."""
     text = re.sub(r"<br\s*/?>", "\n", text)
-    text = re.sub(r"<[^>]+>", "", text)  # теги Telegram-разметки ВК не понимает
+    # теги Telegram-разметки ВК не понимает
+    text = re.sub(r"<[^>]+>", "", text)
     return text.strip()
 
 
@@ -207,12 +242,18 @@ def publish(text_tg: str, text_vk: str | None = None,
         else:
             anim_report = ""
             if animation is not None and animation.exists():
-                r = send_animation_tg(chat_id, animation)
-                anim_report = "с анимацией" if r["ok"] else \
-                    f" (анимация не ушла: {r['error']})"
+                animation_result = send_animation_tg(chat_id, animation)
+                if animation_result["ok"]:
+                    anim_report = "с анимацией"
+                else:
+                    anim_report = (
+                        f" (анимация не ушла: {animation_result['error']})")
             r = post_telegram(chat_id, text_tg)
-            reports.append(f"Telegram: опубликовано {anim_report}".strip()
-                           if r["ok"] else f"Telegram: НЕ вышло — {r['error']}")
+            if r["ok"]:
+                reports.append(
+                    f"Telegram: опубликовано {anim_report}".strip())
+            else:
+                reports.append(f"Telegram: НЕ вышло — {r['error']}")
 
     vk = soc.get("vk", {})
     if vk.get("вкл"):

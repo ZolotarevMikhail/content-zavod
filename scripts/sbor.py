@@ -1,53 +1,49 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Этап 0 «Контент-завода»: поиск в интернете тем-кандидатов по теме из config.json.
+Этап 0 «Контент-завода»: поиск в интернете тем-кандидатов
+по теме из config.json.
 
 Что делает:
   1. Читает config.json (источники, ключевые слова).
-  2. Забирает RSS-ленты и открытые страницы Telegram-каналов (t.me/s/...) — без ключей.
+  2. Забирает RSS-ленты и открытые страницы Telegram-каналов
+     (t.me/s/...) — без ключей.
   3. Фильтрует по теме, убирает дубли.
   4. Сохраняет результат в candidates.json.
-Дальше кандидатов суммирует и оценивает Claude по рубрике (config/rubrica.md).
+Дальше кандидатов суммирует и оценивает Claude по рубрике
+(config/rubrica.md).
 
 Запуск:  python3 scripts/sbor.py     (периодичность — в config.json)
 """
 
 import json
 import re
-import ssl
 import sys
-import time
-import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
+import publish  # noqa: E402  (единая сеть: download через publish._get)
+
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
 CONFIG_FILE = ROOT / "config.json"
 OUT_FILE = ROOT / "candidates.json"
+ARCHIVE_FILE = ROOT / "архив-тем.json"
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
 
 def fetch(url: str) -> bytes | None:
-    """Скачать страницу. 2 попытки с паузой; при неудаче — None, не падаем."""
-    try:
-        import certifi  # сертификаты для urllib (у Питона с python.org их нет из коробки)
-        ctx = ssl.create_default_context(cafile=certifi.where())
-    except ImportError:
-        ctx = None
-    for attempt in (1, 2):
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
-                return resp.read()
-        except Exception as e:
-            if attempt == 2:
-                print(f"  ! не удалось скачать {url}: {e}")
-                return None
-            time.sleep(3)
-    return None
+    """Скачать страницу (2 попытки с паузой). При неудаче — None, не падаем.
+
+    Сеть — единая точка проекта (publish._get); здесь только параметры
+    источника и свой отчёт об ошибке."""
+    data, err = publish._get(url, timeout=15, user_agent=UA, attempts=2,
+                             pause=3)
+    if data is None:
+        print(f"  ! не удалось скачать {url}: {err or 'причина неизвестна'}")
+    return data
 
 
 def strip_html(text: str) -> str:
@@ -66,11 +62,14 @@ def parse_rss(url: str) -> list[dict]:
             link = (item.findtext("link") or "").strip()
             desc = strip_html(item.findtext("description") or "")[:500]
             pub = (item.findtext("pubDate") or "").strip()
-            # Habr отдаёт служебные заголовки («Пост @автор — хаб — дата»),
-            # осмысленный текст — в description: берём оттуда первую фразу
+            # Habr отдаёт служебные заголовки
+            # («Пост @автор — хаб — дата»), осмысленный текст —
+            # в description: берём оттуда первую фразу
             if title.startswith("Пост @") and desc:
-                first = re.split(r"[.!?](?:\s|$)", desc, maxsplit=1)[0].strip()
-                title = (first[:100] + "…") if len(first) > 100 else (first or title)
+                first = re.split(
+                    r"[.!?](?:\s|$)", desc, maxsplit=1)[0].strip()
+                title = (first[:100] + "…") if len(first) > 100 \
+                    else (first or title)
             if title and link:
                 items.append({"title": title, "url": link,
                               "summary": desc, "source": url, "date": pub})
@@ -106,6 +105,85 @@ def parse_tg_channel(name: str) -> list[dict]:
 def on_topic(item: dict, keywords: list[str]) -> bool:
     text = (item["title"] + " " + item["summary"]).lower()
     return any(k in text for k in keywords)
+
+
+# Термины, понятные только специалистам: широкая аудитория такое пролистает.
+JARGON = [
+    "llm", "gpt-4", "gpt-5", "transformer", "бенчмарк", "benchmark",
+    "open-source", "опенсорс", "инференс", "fine-tuning", "файнтюн",
+    "датасет", "gpu", "видеокарт", "rlhf", "токен", "api", "agent sdk",
+    "веса модели", "дистилл", "moе", "диффузи", "diffusion", "latency",
+    "контекстное окно", "мультимодальн",
+]
+# Сигналы «живой» темы для не-специалиста: люди, деньги, последствия.
+BROAD = [
+    "человек", "люд", "врач", "юрист", "школ", "студент", "дет",
+    "деньг", "млрд", "миллион", "работу", "зарплат", "запрет", "запрет",
+    "штраф", "суд", "смерт", "мозг", "тело", "животн", "обман", "краж",
+    "боятся", "страх", "впервые", "рекорд", "назвал", "показал",
+]
+
+
+def score(item: dict) -> int:
+    """Предварительная оценка: 1 — тема для широкой аудитории, 0 — узкая."""
+    text = (item["title"] + " " + item["summary"]).lower()
+    s = 0
+    jargon = sum(1 for t in JARGON if t in text)
+    s -= min(jargon, 3)
+    s += min(sum(1 for t in BROAD if t in text), 2)
+    n = len(item["title"])
+    if 30 <= n <= 120:
+        s += 1  # внятный заголовок — признак понятной темы
+    elif n > 160:
+        s -= 1
+    return s
+
+
+def load_archive() -> list[dict]:
+    if ARCHIVE_FILE.exists():
+        return json.loads(ARCHIVE_FILE.read_text(encoding="utf-8"))
+    return []
+
+
+def add_to_archive(items: list[dict]) -> None:
+    """Дополнить архив тем лучшими темами дня.
+
+    Решение Михаила 06.10.2026: ежедневно в архив кладём до 3 тем,
+    повторы по ссылке не нужны, темы старше 6 месяцев без выбора
+    удаляются."""
+    archive = load_archive()
+    known = {row["url"] for row in archive}
+    added = []
+    for it in items:
+        if it["url"] in known:
+            continue
+        known.add(it["url"])
+        added.append({
+            "дата_добавления": datetime.now().strftime("%Y-%m-%d"),
+            "статус": "в архиве",
+            "title": it["title"],
+            "url": it["url"],
+            "summary": it["summary"],
+            "source": it["source"],
+            "дата_публикации": it["date"],
+        })
+    archive.extend(added)
+
+    # чистка: невыбранные темы старше полугода — вон
+    предел = (datetime.now() - timedelta(days=183)).strftime("%Y-%m-%d")
+    до_чистки = len(archive)
+    archive = [
+        row for row in archive
+        if row.get("статус") == "выбрано"
+        or row.get("дата_добавления", "0000-00-00") >= предел
+    ]
+
+    ARCHIVE_FILE.write_text(
+        json.dumps(archive, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"Архив тем: добавлено {len(added)}, всего {len(archive)} "
+          f"(удалено просроченных: {до_чистки - len(archive)})")
 
 
 def main() -> int:
@@ -147,12 +225,27 @@ def main() -> int:
         seen.add(it["url"])
         filtered.append(it)
 
+    # оставляем только 5–10 лучших тем для широкой аудитории (лимит из конфига)
+    limit = int(cfg.get("правила", {}).get("лимит_тем", 10))
+    filtered.sort(key=score, reverse=True)
+    kept = filtered[:limit]
+    print(f"\nИтого собрано: {len(all_items)}, по теме: {len(filtered)}")
+    print(f"Оставлено лучших: {len(kept)} (лимит {limit}) "
+          "— отбор по понятности широкой аудитории")
+    print("Топ-5 заголовков:")
+    for it in kept[:5]:
+        print(f"  • {it['title'][:90]}")
+    filtered = kept
+
     OUT_FILE.write_text(
         json.dumps(filtered, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    print(f"\nИтого собрано: {len(all_items)}, по теме: {len(filtered)}")
     print(f"Сохранено: {OUT_FILE.name}")
+
+    # первые 3 лучшие темы дня — в архив тем (для выбора 2 раза в неделю)
+    add_to_archive(kept[:3])
+
     if errors:
         print(f"Внимание: {errors} источник(ов) не ответили — не критично, "
               f"остальные собраны")
