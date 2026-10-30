@@ -6,7 +6,7 @@
     "gpt", "chatgpt", "claude", "gemini", "llm",
     "генератив", "deepfake", "промпт", "вайбкодинг", "агент"
   ],
-  "периодичность": "поиск идей каждый день (launchd, утром); публикации 2 раза в неделю, 3 — если идей много; время ~19:30",
+  "периодичность": "поиск идей каждый день (launchd, при включении компьютера); публикации строго вторник и пятница, время не фиксировано — когда получится в течение дня",
   "анимация": {
     "вкл": true,
     "формат": "GIF из 3–5 кадров нейрокартинок на тему поста (imgrouter + сборка в GIF), файл drafts/animation.gif"
@@ -14,6 +14,8 @@
   "правила": {
     "формат": "только текст (картинки и видео — вторым шагом)",
     "раунды_переписывания": 2,
+    "лимит_тем": 15,
+    "аудитория": "широкая: идея понятна человеку, НЕ связанному с ИИ и нейросетями; технически узкие темы (бенчмарки, веса моделей, API) отсеиваются; после каждого прогона в candidates.json остаётся 5–10 лучших тем",
     "фактчек": "цифры и цитаты — только с источником, спорное помечать [уточнить]",
     "закон": "контент соответствует 38-ФЗ «О рекламе» и 152-ФЗ «О персональных данных»: без обещаний результата и дохода, «лучший/№1» только с доказательством; информация о собственных товарах в своих каналах — не реклама; чужое/платная интеграция/партнёрская ссылка — маркировка «Реклама» + erid через ОРД; имена, фото, скрины людей — только с согласия или обезличенно"
   },
@@ -22,12 +24,22 @@
       "https://habr.com/ru/rss/hub/artificial_intelligence/posts/?fl=ru",
       "https://vc.ru/rss",
       "https://hnrss.org/newest?q=AI&points=30",
-      "https://openai.com/news/rss.xml"
+      "https://openai.com/news/rss.xml",
+      "https://tproger.ru/feed/",
+      "https://nplus1.ru/rss",
+      "https://www.theverge.com/rss/index.xml",
+      "https://techcrunch.com/feed/",
+      "https://feeds.arstechnica.com/arstechnica/index",
+      "https://www.technologyreview.com/feed/",
+      "https://www.wired.com/feed/rss",
+      "https://feeds.bbci.co.uk/news/technology/rss.xml",
+      "https://www.theguardian.com/uk/technology/rss",
+      "https://www.sciencedaily.com/rss/top/technology.xml",
+      "https://lenta.ru/rss/news",
+      "https://lenta.ru/rss/articles",
+      "https://www.kommersant.ru/RSS/news.xml"
     ],
-    "tg_каналы": [
-      "neural_newswire",
-      "ai_machinelearning_ru"
-    ]
+    "tg_каналы": []
   },
   "соцсети": {
     "telegram": {
@@ -35,7 +47,7 @@
       "канал_id": "@zolotmixail_ai"
     },
     "vk": {
-      "вкл": true,
+      "вкл": false,
       "владелец_id": "241057433"
     }
   }

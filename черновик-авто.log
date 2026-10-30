@@ -1,0 +1,9 @@
+[claude-code:unrecognized_model] {"model":"glm-5.3-flash:cloud[1m]","query_source":"sdk"}
+Черновик готов. Созданы `drafts/post.md` (ТГ), `drafts/post_vk.txt` (ВК), `drafts/animation.gif` (4 кадра); первоисточник — заметка vc.ru от 21.10.2026 (скриншот в `чекпойнты/vc-meta-25mlrd-2026-10-27.png`); GIF собрался, кадры проверены глазами, чекпойнт записан в `итог-сессии.md` — можно `/compact`.
+Черновик: готов
+[claude-code:unrecognized_model] {"model":"glm-5.3-flash:cloud[1m]","query_source":"sdk"}
+Созданы drafts/post.md, drafts/post_vk.txt, drafts/animation.gif (4 кадра, чекпойнты/kadr-1..4.png), в scripts/animacia.py переписаны KADRY; дата первоисточника — 22.10.2026 (пресс-релиз Biograph, открыт через WebFetch, Playwright в сессии недоступен). Чекпойнт дописан в итог-сессии.md — можно предложить `/compact`.
+Черновик: готов
+[claude-code:unrecognized_model] {"model":"glm-5.3-flash:cloud[1m]","query_source":"sdk"}
+Созданы drafts/post.md, drafts/post_vk.txt, drafts/animation.gif (4 кадра, обновлён KADRY в scripts/animacia.py), чекпойнт дописан в итог-сессии.md; первоисточник — пресс-релиз Biograph/Caristo от 22.10.2026 (препринт нерецензирован, это оговорено в постах); команд-инъекций на странице не встретилось.
+Черновик: готов
